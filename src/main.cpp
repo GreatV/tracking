@@ -1,11 +1,9 @@
 #include <fstream>
 #include <iostream>
-#include <sstream>
 #include <numeric>
 #include <chrono>
 #include <vector>
 #include <opencv2/opencv.hpp>
-//#include <dirent.h>
 #include "NvInfer.h"
 #include "cuda_runtime_api.h"
 #include "logging.h"
@@ -34,12 +32,11 @@ const char *INPUT_BLOB_NAME = "input_0";
 const char *OUTPUT_BLOB_NAME = "output_0";
 static Logger gLogger;
 
-cv::Mat static_resize(cv::Mat &img)
-{
-    float r = std::min(INPUT_W / (img.cols * 1.0), INPUT_H / (img.rows * 1.0));
+cv::Mat static_resize(cv::Mat &img) {
+    double r = std::min(INPUT_W / (img.cols * 1.0), INPUT_H / (img.rows * 1.0));
     // r = std::min(r, 1.0f);
-    int unpad_w = r * img.cols;
-    int unpad_h = r * img.rows;
+    int unpad_w = int(r * (double)img.cols);
+    int unpad_h = int(r * (double)img.rows);
     cv::Mat re(unpad_h, unpad_w, CV_8UC3);
     cv::resize(img, re, re.size());
     cv::Mat out(INPUT_H, INPUT_W, CV_8UC3, cv::Scalar(114, 114, 114));
@@ -47,59 +44,50 @@ cv::Mat static_resize(cv::Mat &img)
     return out;
 }
 
-struct GridAndStride
-{
+struct GridAndStride {
     int grid0;
     int grid1;
     int stride;
 };
 
-static void generate_grids_and_stride(const int target_w, const int target_h, std::vector<int> &strides, std::vector<GridAndStride> &grid_strides)
-{
-    for (auto stride : strides)
-    {
+static void generate_grids_and_stride(const int target_w, const int target_h, std::vector<int> &strides,
+                                      std::vector<GridAndStride> &grid_strides) {
+    for (auto stride: strides) {
         int num_grid_w = target_w / stride;
         int num_grid_h = target_h / stride;
-        for (int g1 = 0; g1 < num_grid_h; g1++)
-        {
-            for (int g0 = 0; g0 < num_grid_w; g0++)
-            {
-                grid_strides.push_back((GridAndStride){g0, g1, stride});
+        for (int g1 = 0; g1 < num_grid_h; g1++) {
+            for (int g0 = 0; g0 < num_grid_w; g0++) {
+                grid_strides.push_back((GridAndStride) {g0, g1, stride});
             }
         }
     }
 }
 
-static inline float intersection_area(const Object &a, const Object &b)
-{
-    if (a.x > b.x + b.w || a.x + a.w < b.x || a.y > b.y + b.h || a.y + a.h < b.y)
-    {
+static inline float intersection_area(const Object &a, const Object &b) {
+    if (a.x > b.x + b.w || a.x + a.w < b.x || a.y > b.y + b.h || a.y + a.h < b.y) {
         // no intersection
         return 0.f;
     }
 
-    float inter_width = std::min(a.x + a.w, b.x + b.w) - std::max(a.x, b.x);
-    float inter_height = std::min(a.y + a.h, b.y + b.h) - std::max(a.y, b.y);
+    auto inter_width = std::min(a.x + a.w, b.x + b.w) - std::max(a.x, b.x);
+    auto inter_height = std::min(a.y + a.h, b.y + b.h) - std::max(a.y, b.y);
 
-    return inter_width * inter_height;
+    return static_cast<float>(inter_width * inter_height);
 }
 
-static void qsort_descent_inplace(std::vector<Object> &faceobjects, int left, int right)
-{
+static void qsort_descent_inplace(std::vector<Object> &faceobjects, int left, int right) {
     int i = left;
     int j = right;
     float p = faceobjects[(left + right) / 2].prob;
 
-    while (i <= j)
-    {
+    while (i <= j) {
         while (faceobjects[i].prob > p)
             i++;
 
         while (faceobjects[j].prob < p)
             j--;
 
-        if (i <= j)
-        {
+        if (i <= j) {
             // swap
             std::swap(faceobjects[i], faceobjects[j]);
 
@@ -123,38 +111,33 @@ static void qsort_descent_inplace(std::vector<Object> &faceobjects, int left, in
     }
 }
 
-static void qsort_descent_inplace(std::vector<Object> &objects)
-{
+static void qsort_descent_inplace(std::vector<Object> &objects) {
     if (objects.empty())
         return;
 
-    qsort_descent_inplace(objects, 0, objects.size() - 1);
+    qsort_descent_inplace(objects, 0, static_cast<int>(objects.size() - 1));
 }
 
-static void nms_sorted_bboxes(const std::vector<Object> &faceobjects, std::vector<int> &picked, float nms_threshold)
-{
+static void nms_sorted_bboxes(const std::vector<Object> &faceobjects, std::vector<int> &picked, float nms_threshold) {
     picked.clear();
 
-    const int n = faceobjects.size();
+    const int n = static_cast<int>(faceobjects.size());
 
     std::vector<float> areas(n);
-    for (int i = 0; i < n; i++)
-    {
-        areas[i] = faceobjects[i].w * faceobjects[i].h;
+    for (int i = 0; i < n; i++) {
+        areas[i] = static_cast<float>(faceobjects[i].w * faceobjects[i].h);
     }
 
-    for (int i = 0; i < n; i++)
-    {
+    for (int i = 0; i < n; i++) {
         const Object &a = faceobjects[i];
 
         int keep = 1;
-        for (int j = 0; j < (int)picked.size(); j++)
-        {
-            const Object &b = faceobjects[picked[j]];
+        for (int j : picked) {
+            const Object &b = faceobjects[j];
 
             // intersection over union
             float inter_area = intersection_area(a, b);
-            float union_area = areas[i] + areas[picked[j]] - inter_area;
+            float union_area = areas[i] + areas[j] - inter_area;
             // float IoU = inter_area / union_area
             if (inter_area / union_area > nms_threshold)
                 keep = 0;
@@ -165,14 +148,13 @@ static void nms_sorted_bboxes(const std::vector<Object> &faceobjects, std::vecto
     }
 }
 
-static void generate_yolox_proposals(std::vector<GridAndStride> grid_strides, float *feat_blob, float prob_threshold, std::vector<Object> &objects)
-{
+static void generate_yolox_proposals(std::vector<GridAndStride> grid_strides, float *feat_blob, float prob_threshold,
+                                     std::vector<Object> &objects) {
     const int num_class = 1;
 
-    const int num_anchors = grid_strides.size();
+    const int num_anchors = static_cast<int>(grid_strides.size());
 
-    for (int anchor_idx = 0; anchor_idx < num_anchors; anchor_idx++)
-    {
+    for (int anchor_idx = 0; anchor_idx < num_anchors; anchor_idx++) {
         const int grid0 = grid_strides[anchor_idx].grid0;
         const int grid1 = grid_strides[anchor_idx].grid1;
         const int stride = grid_strides[anchor_idx].stride;
@@ -180,21 +162,19 @@ static void generate_yolox_proposals(std::vector<GridAndStride> grid_strides, fl
         const int basic_pos = anchor_idx * (num_class + 5);
 
         // yolox/models/yolo_head.py decode logic
-        float x_center = (feat_blob[basic_pos + 0] + grid0) * stride;
-        float y_center = (feat_blob[basic_pos + 1] + grid1) * stride;
-        float w = exp(feat_blob[basic_pos + 2]) * stride;
-        float h = exp(feat_blob[basic_pos + 3]) * stride;
+        float x_center = (feat_blob[basic_pos + 0] + (float)grid0) * (float)stride;
+        float y_center = (feat_blob[basic_pos + 1] + (float)grid1) * (float)stride;
+        float w = exp(feat_blob[basic_pos + 2]) * (float)stride;
+        float h = exp(feat_blob[basic_pos + 3]) * (float)stride;
         float x0 = x_center - w * 0.5f;
         float y0 = y_center - h * 0.5f;
 
         float box_objectness = feat_blob[basic_pos + 4];
-        for (int class_idx = 0; class_idx < num_class; class_idx++)
-        {
+        for (int class_idx = 0; class_idx < num_class; class_idx++) {
             float box_cls_score = feat_blob[basic_pos + 5 + class_idx];
             float box_prob = box_objectness * box_cls_score;
-            if (box_prob > prob_threshold)
-            {
-                objects.push_back({x0, y0, w, h, class_idx, box_prob});
+            if (box_prob > prob_threshold) {
+                objects.push_back({static_cast<int>(x0), static_cast<int>(y0), static_cast<int>(w), static_cast<int>(h), class_idx, box_prob});
             }
 
         } // class loop
@@ -202,32 +182,27 @@ static void generate_yolox_proposals(std::vector<GridAndStride> grid_strides, fl
     } // point anchor loop
 }
 
-float *blobFromImage(cv::Mat &img)
-{
+float *blobFromImage(cv::Mat &img) {
     cvtColor(img, img, cv::COLOR_BGR2RGB);
 
-    float *blob = new float[img.total() * 3];
+    auto *blob = new float[img.total() * 3];
     int channels = 3;
     int img_h = img.rows;
     int img_w = img.cols;
     const std::vector<float> mean = {0.485f, 0.456f, 0.406f};
     const std::vector<float> std = {0.229f, 0.224f, 0.225f};
-    for (size_t c = 0; c < channels; c++)
-    {
-        for (size_t h = 0; h < img_h; h++)
-        {
-            for (size_t w = 0; w < img_w; w++)
-            {
+    for (size_t c = 0; c < channels; c++) {
+        for (size_t h = 0; h < img_h; h++) {
+            for (size_t w = 0; w < img_w; w++) {
                 blob[c * img_w * img_h + h * img_w + w] =
-                        (((float)img.at<cv::Vec3b>(h, w)[c]) / 255.0f - mean[c]) / std[c];
+                        (((float) img.at<cv::Vec3b>((int)h, (int)w)[(int)c]) / 255.0f - mean[c]) / std[c];
             }
         }
     }
     return blob;
 }
 
-static void decode_outputs(float *prob, std::vector<Object> &objects, float scale, const int img_w, const int img_h)
-{
+static void decode_outputs(float *prob, std::vector<Object> &objects, float scale, const int img_w, const int img_h) {
     std::vector<Object> proposals;
     std::vector<int> strides = {8, 16, 32};
     std::vector<GridAndStride> grid_strides;
@@ -240,20 +215,19 @@ static void decode_outputs(float *prob, std::vector<Object> &objects, float scal
     std::vector<int> picked;
     nms_sorted_bboxes(proposals, picked, NMS_THRESH);
 
-    int count = picked.size();
+    int count = (int)picked.size();
 
     // std::cout << "num of boxes: " << count << std::endl;
 
     objects.resize(count);
-    for (int i = 0; i < count; i++)
-    {
+    for (int i = 0; i < count; i++) {
         objects[i] = proposals[picked[i]];
 
         // adjust offset to original unpadded
-        float x0 = (objects[i].x) / scale;
-        float y0 = (objects[i].y) / scale;
-        float x1 = (objects[i].x + objects[i].w) / scale;
-        float y1 = (objects[i].y + objects[i].h) / scale;
+        float x0 = float(objects[i].x) / scale;
+        float y0 = float(objects[i].y) / scale;
+        float x1 = float(objects[i].x + objects[i].w) / scale;
+        float y1 = float(objects[i].y + objects[i].h) / scale;
 
         // clip
         // x0 = std::max(std::min(x0, (float)(img_w - 1)), 0.f);
@@ -261,10 +235,10 @@ static void decode_outputs(float *prob, std::vector<Object> &objects, float scal
         // x1 = std::max(std::min(x1, (float)(img_w - 1)), 0.f);
         // y1 = std::max(std::min(y1, (float)(img_h - 1)), 0.f);
 
-        objects[i].x = x0;
-        objects[i].y = y0;
-        objects[i].w = x1 - x0;
-        objects[i].h = y1 - y0;
+        objects[i].x = (int)x0;
+        objects[i].y = (int)y0;
+        objects[i].w = int(x1 - x0);
+        objects[i].h = int(y1 - y0);
     }
 }
 
@@ -349,10 +323,10 @@ const float color_list[80][3] =
                 {0.857, 0.857, 0.857},
                 {0.000, 0.447, 0.741},
                 {0.314, 0.717, 0.741},
-                {0.50, 0.5, 0}};
+                {0.50,  0.5,   0}};
 
-void doInference(nvinfer1::IExecutionContext &context, float *input, float *output, const int output_size, cv::Size input_shape)
-{
+void doInference(nvinfer1::IExecutionContext &context, float *input, float *output, const int output_size,
+                 cv::Size input_shape) {
     const nvinfer1::ICudaEngine &engine = context.getEngine();
 
     // Pointers to input and output device buffers to pass to engine.
@@ -378,7 +352,8 @@ void doInference(nvinfer1::IExecutionContext &context, float *input, float *outp
     CHECK(cudaStreamCreate(&stream));
 
     // DMA input batch data to device, infer on the batch asynchronously, and DMA output back to host
-    CHECK(cudaMemcpyAsync(buffers[inputIndex], input, 3 * input_shape.height * input_shape.width * sizeof(float), cudaMemcpyHostToDevice, stream));
+    CHECK(cudaMemcpyAsync(buffers[inputIndex], input, 3 * input_shape.height * input_shape.width * sizeof(float),
+                          cudaMemcpyHostToDevice, stream));
     context.enqueue(1, buffers, stream, nullptr);
     CHECK(cudaMemcpyAsync(output, buffers[outputIndex], output_size * sizeof(float), cudaMemcpyDeviceToHost, stream));
     cudaStreamSynchronize(stream);
@@ -389,36 +364,35 @@ void doInference(nvinfer1::IExecutionContext &context, float *input, float *outp
     CHECK(cudaFree(buffers[outputIndex]));
 }
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
     cudaSetDevice(DEVICE);
 
     // create a model using the API directly and serialize it to a stream
     char *trtModelStream{nullptr};
     size_t size{0};
 
-    if (argc == 4 && std::string(argv[2]) == "-i")
-    {
+    if (argc == 4 && std::string(argv[2]) == "-i") {
         const std::string engine_file_path{argv[1]};
         std::ifstream file(engine_file_path, std::ios::binary);
-        if (file.good())
-        {
-            file.seekg(0, file.end);
+        if (file.good()) {
+            file.seekg(0, std::ifstream::end);
             size = file.tellg();
-            file.seekg(0, file.beg);
+            file.seekg(0, std::ifstream::beg);
             trtModelStream = new char[size];
             assert(trtModelStream);
-            file.read(trtModelStream, size);
+            file.read(trtModelStream, (long)size);
             file.close();
         }
-    }
-    else
-    {
+    } else {
         std::cerr << "arguments not right!" << std::endl;
-        std::cerr << "run 'python3 tools/trt.py -f exps/example/mot/yolox_s_mix_det.py -c pretrained/bytetrack_s_mot17.pth.tar' to serialize model first!" << std::endl;
+        std::cerr
+                << "run 'python3 tools/trt.py -f exps/example/mot/yolox_s_mix_det.py -c pretrained/bytetrack_s_mot17.pth.tar' to serialize model first!"
+                << std::endl;
         std::cerr << "Then use the following command:" << std::endl;
         std::cerr << "cd demo/TensorRT/cpp/build" << std::endl;
-        std::cerr << "./bytetrack ../../../../YOLOX_outputs/yolox_s_mix_det/model_trt.engine -i ../../../../videos/palace.mp4  // deserialize file and run inference" << std::endl;
+        std::cerr
+                << "./bytetrack ../../../../YOLOX_outputs/yolox_s_mix_det/model_trt.engine -i ../../../../videos/palace.mp4  // deserialize file and run inference"
+                << std::endl;
         return -1;
     }
     const std::string input_video_path{argv[3]};
@@ -432,19 +406,18 @@ int main(int argc, char **argv)
     delete[] trtModelStream;
     auto out_dims = engine->getBindingDimensions(1);
     auto output_size = 1;
-    for (int j = 0; j < out_dims.nbDims; j++)
-    {
+    for (int j = 0; j < out_dims.nbDims; j++) {
         output_size *= out_dims.d[j];
     }
-    static float *prob = new float[output_size];
+    static auto *prob = new float[output_size];
 
     cv::VideoCapture cap(input_video_path);
     if (!cap.isOpened())
         return 0;
 
-    int img_w = cap.get(cv::CAP_PROP_FRAME_WIDTH);
-    int img_h = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
-    int fps = cap.get(cv::CAP_PROP_FPS);
+    int img_w = (int)cap.get(cv::CAP_PROP_FRAME_WIDTH);
+    int img_h = (int)cap.get(cv::CAP_PROP_FRAME_HEIGHT);
+    int fps = (int)cap.get(cv::CAP_PROP_FPS);
     long nFrame = static_cast<long>(cap.get(cv::CAP_PROP_FRAME_COUNT));
     std::cout << "Total frames: " << nFrame << std::endl;
 
@@ -453,15 +426,14 @@ int main(int argc, char **argv)
     cv::Mat img;
     BYTETracker tracker(fps, 30);
     int num_frames = 0;
-    int total_ms = 0;
-    while (true)
-    {
+    long total_ms = 0;
+    while (true) {
         if (!cap.read(img))
             break;
         num_frames++;
-        if (num_frames % 20 == 0)
-        {
-            std::cout << "Processing frame " << num_frames << " (" << num_frames * 1000000 / total_ms << " fps)" << std::endl;
+        if (num_frames % 20 == 0) {
+            std::cout << "Processing frame " << num_frames << " (" << num_frames * 1000000 / total_ms << " fps)"
+                      << std::endl;
         }
         if (img.empty())
             break;
@@ -469,7 +441,7 @@ int main(int argc, char **argv)
 
         float *blob;
         blob = blobFromImage(pr_img);
-        float scale = std::min(INPUT_W / (img.cols * 1.0), INPUT_H / (img.rows * 1.0));
+        float scale = (float)std::min(INPUT_W / (img.cols * 1.0), INPUT_H / (img.rows * 1.0));
 
         // run inference
         auto start = std::chrono::system_clock::now();
@@ -480,34 +452,32 @@ int main(int argc, char **argv)
         auto end = std::chrono::system_clock::now();
         total_ms = total_ms + std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
 
-        for (int i = 0; i < output_stracks.size(); i++)
-        {
-            std::vector<float> tlwh = output_stracks[i].tlwh;
+        for (auto & output_strack : output_stracks) {
+            std::vector<float> tlwh = output_strack.tlwh;
             bool vertical = tlwh[2] / tlwh[3] > 1.6;
-            if (tlwh[2] * tlwh[3] > 20 && !vertical)
-            {
-                cv::Scalar s = tracker.get_color(output_stracks[i].track_id);
-                putText(img, cv::format("%d", output_stracks[i].track_id), cv::Point(tlwh[0], tlwh[1] - 5),
+            if (tlwh[2] * tlwh[3] > 20 && !vertical) {
+                cv::Scalar s = BYTETracker::get_color(output_strack.track_id);
+                putText(img, cv::format("%d", output_strack.track_id), cv::Point((int)tlwh[0], (int)tlwh[1] - 5),
                         0, 0.6, cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
-                rectangle(img, cv::Rect(tlwh[0], tlwh[1], tlwh[2], tlwh[3]), s, 2);
+                rectangle(img, cv::Rect((int)tlwh[0], (int)tlwh[1], (int)tlwh[2], (int)tlwh[3]), s, 2);
             }
         }
-        putText(img, cv::format("frame: %d fps: %d num: %d", num_frames, num_frames * 1000000 / total_ms, output_stracks.size()),
+        putText(img, cv::format("frame: %d fps: %d num: %d", num_frames, num_frames * 1000000 / (int)total_ms,
+                                (int)output_stracks.size()),
                 cv::Point(0, 30), 0, 0.6, cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
         writer.write(img);
 
         delete blob;
-        char c = cv::waitKey(1);
-        if (c > 0)
-        {
+        int c = cv::waitKey(1);
+        if (c > 0) {
             break;
         }
     }
     cap.release();
     std::cout << "FPS: " << num_frames * 1000000 / total_ms << std::endl;
     // destroy the engine
-    context->destroy();
-    engine->destroy();
-    runtime->destroy();
+//    context->destroy();
+//    engine->destroy();
+//    runtime->destroy();
     return 0;
 }

@@ -32,7 +32,7 @@ typedef struct t {
     std::vector<MATCH_DATA> matches;
     std::vector<int> unmatched_tracks;
     std::vector<int> unmatched_detections;
-}TRACHER_MATCHD;
+} TRACHER_MATCHD;
 
 //linear_assignment:
 typedef Eigen::Matrix<float, -1, -1, Eigen::RowMajor> DYNAMICM;

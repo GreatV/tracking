@@ -3,8 +3,7 @@
 
 #include "strack.h"
 
-struct Object
-{
+struct Object {
     // cv::Rect_<float> rect;
     int x;
     int y;
@@ -14,30 +13,44 @@ struct Object
     float prob;
 };
 
-class BYTETracker
-{
+class BYTETracker {
 public:
-    BYTETracker(int frame_rate = 30, int track_buffer = 30);
+    explicit BYTETracker(int frame_rate = 30, int track_buffer = 30);
+
     ~BYTETracker();
 
-    std::vector<STrack> update(std::vector<Object>& objects);
-    cv::Scalar get_color(int idx);
+    std::vector<STrack> update(std::vector<Object> &objects);
+
+    static cv::Scalar get_color(int idx);
 
 private:
-    std::vector<STrack*> joint_stracks(std::vector<STrack*> &tlista, std::vector<STrack> &tlistb);
-    std::vector<STrack> joint_stracks(std::vector<STrack> &tlista, std::vector<STrack> &tlistb);
+    static std::vector<STrack *> joint_stracks(std::vector<STrack *> &track_list_a, std::vector<STrack> &track_list_b);
 
-    std::vector<STrack> sub_stracks(std::vector<STrack> &tlista, std::vector<STrack> &tlistb);
-    void remove_duplicate_stracks(std::vector<STrack> &resa, std::vector<STrack> &resb, std::vector<STrack> &stracksa, std::vector<STrack> &stracksb);
+    static std::vector<STrack> joint_stracks(std::vector<STrack> &track_list_a, std::vector<STrack> &track_list_b);
 
-    void linear_assignment(std::vector<std::vector<float> > &cost_matrix, int cost_matrix_size, int cost_matrix_size_size, float thresh,
-                           std::vector<std::vector<int> > &matches, std::vector<int> &unmatched_a, std::vector<int> &unmatched_b);
-    std::vector<std::vector<float> > iou_distance(std::vector<STrack*> &atracks, std::vector<STrack> &btracks, int &dist_size, int &dist_size_size);
-    std::vector<std::vector<float> > iou_distance(std::vector<STrack> &atracks, std::vector<STrack> &btracks);
-    std::vector<std::vector<float> > ious(std::vector<std::vector<float> > &atlbrs, std::vector<std::vector<float> > &btlbrs);
+    static std::vector<STrack> sub_stracks(std::vector<STrack> &rack_list_a, std::vector<STrack> &track_list_b);
 
-    double lapjv(const std::vector<std::vector<float> > &cost, std::vector<int> &rowsol, std::vector<int> &colsol,
-                 bool extend_cost = false, float cost_limit = LONG_MAX, bool return_cost = true);
+    static void
+    remove_duplicate_stracks(std::vector<STrack> &resa, std::vector<STrack> &resb, std::vector<STrack> &stracksa,
+                             std::vector<STrack> &stracksb);
+
+    static void
+    linear_assignment(std::vector<std::vector<float> > &cost_matrix, int cost_matrix_size, int cost_matrix_size_size,
+                      float thresh,
+                      std::vector<std::vector<int> > &matches, std::vector<int> &unmatched_a,
+                      std::vector<int> &unmatched_b);
+
+    static std::vector<std::vector<float> >
+    iou_distance(std::vector<STrack *> &atracks, std::vector<STrack> &btracks, int &dist_size, int &dist_size_size);
+
+    static std::vector<std::vector<float> > iou_distance(std::vector<STrack> &atracks, std::vector<STrack> &btracks);
+
+    static std::vector<std::vector<float> >
+    ious(std::vector<std::vector<float> > &atlbrs, std::vector<std::vector<float> > &btlbrs);
+
+    static double
+    lapjv(const std::vector<std::vector<float> > &cost, std::vector<int> &rowsol, std::vector<int> &colsol,
+          bool extend_cost = false, float cost_limit = LONG_MAX, bool return_cost = true);
 
 private:
 
